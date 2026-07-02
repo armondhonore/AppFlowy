@@ -1,0 +1,94 @@
+application:
+  name: appflowy
+  pods:
+  # Web frontend — serves the AppFlowy UI at "/". It calls the cloud API at /api
+  # and gotrue at /gotrue (same origin, routed by path below).
+  - name: web
+    image: mirror.gcr.io/appflowyinc/appflowy_web:latest
+    path: /
+    servicePorts:
+    - 80
+    vars:
+      APPFLOWY_BASE_URL: "https://relaxed-weasel-appflowy.cloud.nexlayer.ai"
+      APPFLOWY_GOTRUE_BASE_URL: "https://relaxed-weasel-appflowy.cloud.nexlayer.ai/gotrue"
+      APPFLOWY_WS_BASE_URL: "wss://relaxed-weasel-appflowy.cloud.nexlayer.ai/ws"
+  - name: app
+    image: mirror.gcr.io/appflowyinc/appflowy_cloud:latest
+    path: /api
+    servicePorts:
+    - 8000
+    vars:
+      RUST_LOG: info
+      APPFLOWY_BASE_URL: "https://relaxed-weasel-appflowy.cloud.nexlayer.ai"
+      APPFLOWY_WEB_URL: "https://relaxed-weasel-appflowy.cloud.nexlayer.ai"
+      APPFLOWY_DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres.pod:5432/appflowy
+      APPFLOWY_REDIS_URI: redis://redis.pod:6379
+      APPFLOWY_GOTRUE_BASE_URL: "http://gotrue.pod:9999"
+      APPFLOWY_GOTRUE_JWT_SECRET: "gotrue-jwt-secret-appflowy-32chars"
+      APPFLOWY_GOTRUE_JWT_EXP: "7200"
+      APPFLOWY_GOTRUE_ADMIN_EMAIL: "admin@example.com"
+      APPFLOWY_GOTRUE_ADMIN_PASSWORD: "Admin1234!"
+      APPFLOWY_GOTRUE_MAILER_AUTOCONFIRM: "true"
+      APPFLOWY_ACCESS_CONTROL: "false"
+      # appflowy_cloud needs object storage; use the bundled MinIO pod.
+      APPFLOWY_S3_USE_MINIO: "true"
+      APPFLOWY_S3_MINIO_URL: "http://minio.pod:9000"
+      APPFLOWY_S3_ACCESS_KEY: minioadmin
+      APPFLOWY_S3_SECRET_KEY: minioadmin
+      APPFLOWY_S3_BUCKET: appflowy
+      APPFLOWY_S3_REGION: us-east-1
+      APPFLOWY_S3_CREATE_BUCKET: "true"
+  - name: gotrue
+    image: mirror.gcr.io/appflowyinc/gotrue:latest
+    path: /gotrue
+    servicePorts:
+    - 9999
+    vars:
+      GOTRUE_SITE_URL: "https://relaxed-weasel-appflowy.cloud.nexlayer.ai"
+      GOTRUE_EXTERNAL_URL: "https://relaxed-weasel-appflowy.cloud.nexlayer.ai/gotrue"
+      GOTRUE_URI_ALLOW_LIST: "**"
+      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_JWT_ADMIN_ROLES: "supabase_admin"
+      GOTRUE_JWT_AUD: "authenticated"
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: "authenticated"
+      GOTRUE_JWT_EXP: "7200"
+      GOTRUE_JWT_SECRET: "gotrue-jwt-secret-appflowy-32chars"
+      GOTRUE_LOG_LEVEL: "ERROR"
+      GOTRUE_OPERATOR_TOKEN: "operator-token-appflowy"
+      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD}@postgres.pod:5432/appflowy"
+      API_EXTERNAL_URL: "https://relaxed-weasel-appflowy.cloud.nexlayer.ai/gotrue"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_DB_DRIVER: postgres
+  - name: postgres
+    # appflowy_cloud migrations require the pgvector extension ("vector" type).
+    image: mirror.gcr.io/pgvector/pgvector:pg16
+    servicePorts:
+    - 5432
+    vars:
+      POSTGRES_DB: appflowy
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    volumes:
+    - name: appflowy-db
+      mountPath: /var/lib/postgresql
+      size: 10Gi
+  - name: redis
+    image: mirror.gcr.io/library/redis:7-alpine
+    servicePorts:
+    - 6379
+  - name: minio
+    # The platform deploy backend (userDeploy.js:728) runs args.match() on a pod's
+    # command/args and 500s when it's a list, so we must NOT set command/args.
+    # The bitnami minio image auto-runs `minio server /bitnami/minio/data` from its
+    # entrypoint, configured entirely by env vars — no command override needed.
+    image: mirror.gcr.io/bitnamilegacy/minio:latest
+    servicePorts:
+    - 9000
+    vars:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_DEFAULT_BUCKETS: appflowy
+    # No PVC: bitnami minio runs as UID 1001 and can't write to a root-owned PVC
+    # mount (the platform has no fsGroup/securityContext support). The image's own
+    # /bitnami/minio/data is owned by 1001 and writable. Object storage is therefore
+    # ephemeral — fine for this test deploy; appflowy recreates the bucket on boot.
